@@ -1,0 +1,363 @@
+---
+title: "Temperature Project Report"
+author: "Yuting Ma, Xuetong Ma"
+date: "2017/11/5"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+```{r, include=FALSE, message=FALSE, warning=FALSE}
+require(dplyr)
+require(leaflet)
+require(highcharter)
+require(lubridate)
+require(ggvis)
+require(openxlsx)
+require(ggmap)
+require(ggplot2)
+```
+
+
+  This is a report for temperature data of East Africa from 2001-2017. We first started off by reseaching for data through the NOAA buoy system. However, the data for East Africa were quite limited. Therefore, we tried to use shipboard data and filter out the data points within the East Africa area ( -45.00 < LAT < 13.00 & 26.00< LON < 63.00). Here, all the data were collected from shipboard observation of Voluntary Observing Ships (VOS) program, which can be found here: https://www1.ncdc.noaa.gov/pub/data/vosclim/. (We only took GTS files from each year). 
+  
+  Overall, the data were of good quality: Temperature seems reasonable and there were limited amount of invalid data, except some missing values (N/A). After extracting all the factors we care about and adjusting for the region we need to focus ( -45.00 < LAT < 13.00 & 26.00< LON < 63.00), only data from 2001 missing records from January to April. This may because the program was just started so there weren't enough ships to cover the area we focus, which is acceptble. In order for the data to be more comparable on a long-term base, we selected the data points within 6 hours of noon time, and coded the time of the recorded temprature as a difference to noon time, (before noon as negative difference, after noon as postive difference); for other data points, we coded the time difference as "A" to avoid including the data in our analysis. 
+
+  An interesting fact is that data files become larger and larger as time goes by. For example, the data of January 2001 is 33K, but the data of January 2017 is 17M, indicating that more ships involved in this program so the amount of data became larger. Also, after we calculated time difference with noon, we found that the data was collected every 3 hours regularly.
+
+
+
+```{r datacleaning, eval=FALSE, echo= FALSE}
+
+#Read all the data and extract facters we care about
+#Read and extract data from 2001 to 2006
+  
+data.clean <- NULL
+  for (i in 2001:2016) {
+    for (j in cbind("jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec")) {
+      FileTitle <- paste("VOSClim_GTS_", j, "_", toString(i), ".txt", sep = "")
+      read <- readLines(FileTitle)
+      
+      df <- NULL
+      for (k in 1:length(read)) {
+        tmp <- read[k]
+        subtmp <- paste0(substr(tmp, 1, 23), substr(tmp, 70, 73), substr(tmp, 86, 89))
+        df <- rbind(df, subtmp)
+      }
+      read.clean <- read.fwf(textConnection(df), widths=c(4,2,2,4,5,6,4,4))
+      names(read.clean) <- c("YR", "MO", "DY", "HR", "LAT", "LON", "AT", "SST")
+      read.clean <- read.clean %>% 
+        filter(LAT > -4500 & LAT < 1300 & LON > 2600 & LON < 6300) %>% 
+        na.omit()
+      data.clean <- rbind(data.clean, read.clean)
+    }
+  }
+
+
+#Read and extract data of 2017
+
+  for (l in cbind("jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep")) {
+    FileTitle <- paste("VOSClim_GTS_", l, "_2017.txt", sep = "")
+    read <- readLines(FileTitle)
+   
+      df <- NULL
+      for (k in 1:length(read)) {
+        tmp <- read[k]
+        subtmp <- paste0(substr(tmp, 1, 23), substr(tmp, 70, 73), substr(tmp, 86, 89))
+        df <- rbind(df, subtmp)
+      }
+      read.clean <- read.fwf(textConnection(df), widths=c(4,2,2,4,5,6,4,4))
+      names(read.clean) <- c("YR", "MO", "DY", "HR", "LAT", "LON", "AT", "SST")
+      read.clean <- read.clean %>% 
+        filter(LAT > -3700 & LAT < 1300 & LON > 3500 & LON < 6300) %>% 
+        na.omit()
+      data.clean <- rbind(data.clean, read.clean)
+  }
+```
+
+
+
+```{r write output, eval=FALSE, echo=FALSE}
+
+#Recode the data and reorganize columns
+data.clean$team_num <- 8
+data.clean$reading_type <- "ship"
+
+
+#Adjust data to local time zone and calculate time difference
+
+data.clean$date_time <- with_tz(make_datetime(year = data.clean$YR, month = data.clean$MO, day = data.clean$DY, hour = data.clean$HR/100, tz = "UTC"), "Africa/Nairobi") 
+data.clean$time_diff <- hour(data.clean$date_time) - 12
+
+
+#Change unwanted values to A
+
+for (i in 1:length(data.clean$time_diff)) {
+  if (as.numeric(data.clean$time_diff[i]) > 6 ) {
+    data.clean$time_diff[i]  = "A"
+  }
+  else if (as.numeric(data.clean$time_diff[i]) < -6) {
+    data.clean$time_diff[i]  = "A"
+  }
+}
+
+#Creat the output data columns
+
+data.output <- data.clean[c("team_num", "reading_type", "time_diff", "date_time")]
+data.output$Lat <- data.clean$LAT/100
+data.output$Lon <- data.clean$LON/100
+data.output$sea_temp <- data.clean$SST/10
+data.output$air_temp <- data.clean$AT/10
+
+## Write output xlsx
+
+write.xlsx(data.output, file = "east_africa_data.xlsx", sheetName="Sheet1",  col.names=TRUE, row.names=FALSE, append=FALSE, showNA=TRUE)
+```
+
+
+
+```{r readxslx, include=FALSE}
+
+#Read xlsx output since above code are not being ran when producing the report.
+
+require(readxl)
+d <- read_excel("east_africa_data.xlsx", sheet = "Sheet1")
+
+##Modify variables in d for future use
+
+d_noon <- filter(d, time_diff != "A")
+d_noon$yr <- year(d_noon$date_time)
+d_noon$mo <- month(d_noon$date_time)
+d_noon$area <- NA
+for (i in 1:length(d_noon$Lat)) {
+  if (d_noon$Lat[i] >= -20) {
+    d_noon$area[i] = "Tropic"
+  } else {
+    d_noon$area[i] ="Subtropic"
+  }
+}
+```
+
+
+#Region on the map
+
+    Below is a map of of East Africa. We focused on data points located at east sea area, with little observations of continential sea.
+
+```{r map1, echo=FALSE}
+
+# View the map of Africa. 
+
+m=leaflet() %>% addTiles() %>% 
+  setView( lng = 41.15, lat = -9.43, zoom = 3 ) %>% 
+  addProviderTiles("Esri.WorldImagery")
+m
+```
+
+  
+     
+     
+     
+  This is the map of East Africa after adding all the observation plots. The concentrated orange indicates that there are more data there. The shade of the color indicates the temprature: darker orange means higher temprature and lighter ones means lower temprature. From colors and density we can see that there are more data towards the north and south in our selected region, but less in the middle of the region or inside the continent.
+
+
+
+```{r map2, echo= FALSE}
+
+##Map with observation plots added
+
+pal1 <- colorNumeric(palette = "Oranges",domain = d_noon$air_temp)
+
+leaflet(d_noon) %>% addTiles() %>% 
+  setView( lng = 41.15, lat = -9.43, zoom = 3 ) %>% 
+  addProviderTiles("Esri.WorldImagery") %>% 
+  addCircleMarkers(
+    lng = d_noon$Lon, 
+    lat = d_noon$Lat, 
+    radius = 1.2,
+    color = pal1(d_noon$air_temp), 
+    opacity = 0.6, 
+    fill = TRUE, 
+    fillColor = pal1(d_noon$air_temp), 
+    stroke = TRUE, 
+    fillOpacity = 0.6, 
+    label = NULL)
+
+```
+
+
+
+
+#Primary Summary
+
+Below is a broad summary of the data: 
+
+```{r mean temp table, echo=FALSE}
+
+#mean temp table excluding time_diff = A
+
+d_noon %>% 
+    group_by(Year = year(date_time)) %>%
+      summarise(Avg_Air_Temp = mean(air_temp), 
+               Max_Air_Temp = max(air_temp), 
+               Min_Air_Temp = min(air_temp), 
+               Avg_Sea_Temp = mean(sea_temp), 
+               Max_Sea_Temp = max(sea_temp), 
+               Min_Sea_Temp = min(air_temp)
+            ) -> s
+s
+```
+
+
+   
+   
+   We summarized the air and sea tempretures by years to analyze any general time trend in the 
+past 17 years. According to the result, average tempretures almost remained stable in the past 17 
+years, with a llittle bit increase. However, the max_air_temp of 2012 is 91.0, which is irrational 
+and should be considered as an outlier. Futher analysis using this cleaned data file should 
+investigate this observation carfully and remove it if needed.
+    
+  Also, the minimum tempretures are especially low from 2002 to 2006, but still in logical range. 
+Due to the nature of the shipboard data, the measurement can vary a lot based on the different 
+location where the temperatures were took. In order to determine if location is the reason for a
+nomaly in temprature, we further graphed the shipboard data location by years.
+
+```{r visual summary, echo=FALSE}
+
+#Histogram of average temperature
+
+ggplot(s) + 
+  geom_col(mapping = aes( x = s$Year, y = s$Avg_Air_Temp)) + 
+  ggtitle("Average Temperature by Year") + 
+  xlab("Year") + 
+  ylab("Average Air Temperature")
+```
+
+ 
+  Then we draw a histogram of average temperature to visualize information we got above. It is obvious that average tempretures almost remained stable in the past 17 years, with a llittle bit increase.
+ 
+ 
+
+##Further analysis based on summary above
+
+
+
+  Since we have seen potential outlier from above summary, we decide to draw a scatter plot for the whole data to see if there are other potential outliers.
+  
+```{r total plot, echo=FALSE}
+
+#Draw a scatter plot for all the data
+
+ggplot(d_noon) + 
+  geom_point(aes(x = d_noon$date_time, y = d_noon$air_temp, colour = "red"))+
+  ggtitle("Scatter Plot of Time & Air Temperature") + 
+  xlab("Time") + 
+  ylab("Air Temperature")
+```
+
+ 
+ 
+  From the scatter plot, the observation of 91.0 centigrade distributed quite different with other data, thus is an outlier and should be removed from future analysis. Besides, the observations of 0 centigrade are also a little far from other observations. Then they are potential outliers that need further investigation to make conclusion.
+
+ 
+ 
+ 
+ 
+  Since we have seen relatively low minimize temperature, we further break down the data points location by year, to analyze if the development of the VOS program (i.e. more observation on the south, which is far away from the equator),is a factor that result in those relatively low temprature observations. 
+
+```{r breakdown plot, echo=FALSE, message=FALSE, warning=FALSE}
+
+# Draw breakdown plot by year
+map1 <- get_map(location = c(lon = 48, lat = -7.5), 
+        zoom = 3,
+        scale = "auto", 
+        maptype = "satellite", 
+        source = "google", 
+        crop = TRUE)
+
+ggmap(map1) + geom_point(aes(x = d_noon$Lon, y = d_noon$Lat, colour = d_noon$air_temp) , data = d_noon) + 
+ scale_colour_gradient(d_noon$air_temp, 
+                     low = "white", 
+                     high = "red") + 
+  facet_wrap(~yr, nrow = 3)+
+  ggtitle("Breakdown Plot by Year")
+```
+
+ 
+   The above chart is graphed with data points of Air Temprature and the color of the data points is coded in accordance with the temprature, where the darker orange indicates higher air temprature and the lighter orange indicates lower air temprature. As illustarted in the charts, the results meet our expectations. The routes of the ships and thus the location of the data points are different from one year to another. The lower tempratures occur at lower latidudes, and tempratures at the same latitude are comparable in different years.
+
+
+###Visualize trend of the temperature
+
+  To visualize the trend of temperature among these 17 years, we draw smooth graphs for both sea and air temperature.
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+
+# Yearly Time Trend of Air_Temp
+ggplot(d_noon) +
+  geom_smooth(mapping = aes(x = d_noon$date_time, y = d_noon$air_temp))+
+  ggtitle("Smooth Line for Time Trend of Air Temperature") + 
+  xlab("Time") +
+  ylab("Air Temperature")
+```
+
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+# Yearly Time Trend of Sea_Temp
+ggplot(d_noon) +
+  geom_smooth(mapping = aes(x = d_noon$date_time, y = d_noon$sea_temp))+
+  ggtitle("Smooth Line for Time Trend of Sea Temperature") + 
+  xlab("Time") + 
+  ylab("Air Temperature")
+```
+
+
+  Compare the trend for air and sea temprature for the past 17 years, it can be concluded that the sea and air temprature generally share the same periodic trend with the weather fluctuation. However, the range of the sea temprature's change is larger than that of the air temprature. Future studies can investigate what cause the obvious increase/decrease of temperature for those peak and trough.
+
+
+
+##Regression models for temperature
+
+  Below is a regression model for sea temperature in our selected region. Based on the output,     
+Sea_temperature = 23.915991 + 0.124234latitude +  0.056068longitude. The overall model and both the predictors are statistically significant. Temperature tend to increase 0.12 centigrade on average 
+with one degree latitude north, which is logical because the locataion is closer to the equator. 
+Also, this conclusion is same with plots on our map above. 
+  
+  Temperature tend to increase 0.056 centigrade on average with one degree longitude east. Although in practice temperature may not based on longitude too much but latitude, for our selected region, 
+the average tendency is like this. We can roughly predict the temperature of somewhere in our 
+region with its latitude and longitude.
+
+
+
+```{r sea regression, echo=FALSE}
+
+#Run a regression model for our region.
+
+ summary(lm(d_noon$sea_temp ~ d_noon$Lat+ d_noon$Lon))
+ 
+
+```
+
+
+  
+  
+  
+  
+  This is a fitted model for air temperature. Here Air_temperature = 26.899909 + 0.151974latitude + 0.003759longitude. However, longitute has p-value = 0.213, which is not significant at 0.05 
+significance level, which is consistant with the condition in practice. But we can still predict 
+the air temperature of somewhere in our region with latitude roughly.
+
+
+
+```{r air regression, echo=FALSE} 
+
+##Regression for air temperature
+
+summary(lm(d_noon$air_temp ~ d_noon$Lat+ d_noon$Lon))
+```
+
+
+#Conclusion
+
+  From all the efforts above, we can see that the data were at really good quality since there are very few outliers considering such huge observations. Among these 17 years, the average temperature of each year almost remained stable, with a little increase in recent years. Also, we have done regression models to roughly predict the temperature based on latitude and longitude. Some graphs, like the smooth ones, may direct future analysis on specific issues.
